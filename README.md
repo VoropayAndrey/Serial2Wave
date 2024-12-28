@@ -20,7 +20,7 @@ Make sure you have **Rust** installed. If not, get it from [rust-lang.org](https
 Clone the repository:
 
 ```sh
-git clone https://github.com/yourusername/Serial2Wave.git
+git clone https://github.com/voropaiandrii/Serial2Wave
 cd Serial2Wave
 ```
 
