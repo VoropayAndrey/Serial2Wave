@@ -1,0 +1,8 @@
+[package]
+name = "PineBudsAudioReceiverProject"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serialport = "4.2.2"
+chrono = "0.4"

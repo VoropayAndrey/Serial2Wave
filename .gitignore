@@ -1,0 +1,67 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo specific
+Cargo.lock
+.cargo/
+.cargo-lock
+
+# Dependency registry
+registry/
+index/
+
+# Binaries
+*.exe
+*.out
+*.o
+*.d
+*.so
+*.dylib
+*.a
+*.dll
+
+# Debugging tools
+gdb_history
+lldb_history
+
+# IDEs and editors
+.idea/
+.vscode/
+*.iml
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Node_modules (if integrating frontend tooling)
+node_modules/
+
+# Environment files
+.env
+.env.*
+
+# Coverage results
+/coverage/
+*.profraw
+
+# Testing
+/tests/tmp/
+
+# Rustfmt and Clippy
+rustfmt.toml
+clippy.toml
+
+# Ignore generated documentation
+/target/doc/
+
+# macOS
+*.DS_Store
+
+# Windows
+Thumbs.db
