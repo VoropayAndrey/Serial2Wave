@@ -1,5 +1,4 @@
 use std::io::{self, Read};
-use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -9,27 +8,19 @@ use argh::FromArgs;
 use once_cell::sync::Lazy;
 use hound;
 use ctrlc;
-use byteorder_slice::{BigEndian, ByteOrder, LittleEndian};
+use byteorder_slice::{ByteOrder, LittleEndian};
+use std::process;
 
 mod constants;
 mod parser;
 mod utils;
-
-/// Default configuration file path.
-const DEFAULT_CONFIG: &str = "config.json";
-
-const spec: hound::WavSpec = hound::WavSpec {
-    channels: 1,
-    sample_rate: 48000,
-    bits_per_sample: 16,
-    sample_format: hound::SampleFormat::Int,
-};
+mod config;
 
 /// An example CLI tool.
 #[derive(FromArgs)]
 struct Args {
     /// path to the configuration file
-    #[argh(option, short = 'c', default = "DEFAULT_CONFIG.to_string()")]
+    #[argh(option, short = 'c', default = "String::from(\"./config.json\")")]
     config: String,
 
     /// verbose mode
@@ -83,25 +74,66 @@ fn main() -> io::Result<()> {
     if args.verbose {
         println!("Verbose mode is enabled.");
     }
+
+    let mut config_manager = config::config::ConfigManager::new(&args.config);
+
+    if !config_manager.is_config_exist() {
+        println!("⚠️ Config file not found. Creating default...");
+        config_manager.create_default_config();
+    }
+    println!("Loading the config file...");
+    let config: config::config::Config = config_manager.load_config();
+
+    // Serialize the config struct into a JSON string
+    let json_config = serde_json::to_string_pretty(&config)
+        .expect("Failed to serialize Config to JSON");
+    println!("Loaded Config: {}", json_config);
+
+
     let now = Local::now();
-    let audio_file_name = Arc::new(format!("sine_{}.wav", now.format("%Y-%m-%d_%H:%M:%S%.3f")));
-    let mut writer = hound::WavWriter::create(Path::new(&*audio_file_name), spec).unwrap();
+    let audio_file_name = Arc::new(format!("{}/{}_sine_{}.wav", 
+        config.output_wav_file_path, 
+        config.output_files_prefix, 
+        now.format("%Y-%m-%d_%H:%M:%S%.3f")
+    ));
 
     let ram_buffer = Arc::new(Mutex::new(Vec::new()));
     let ram_buffer_clone = Arc::clone(&ram_buffer);
+    // Shared mutable writer initialized outside the block
+    let writer = Arc::new(Mutex::new(None));
 
-    let port = serialport::new(constants::common::SERIAL_PORT, 
-            constants::common::BAUDRATE)
+    let port = serialport::new(config.serial_port.clone(), 
+            config.serial_port_baud_rate.try_into().expect("config.number_of_channels is too large for u32"))
         .timeout(Duration::from_secs(1))
         .open();
 
-    let sync_vec: Vec<u8> = vec![0xFF, 0x01, 0xFF, 0x02, 0xFF, 0x03, 0xFF, 0x04];
+    let port_clone = port.as_ref();
 
-    let parser = Arc::new(Mutex::new(parser::parser::Parser::new(sync_vec)));
+    if port_clone.is_ok() {
+        let spec = hound::WavSpec {
+            channels: config.number_of_channels.try_into().expect("config.number_of_channels is too large for u16"),
+            sample_rate: config.sample_rate.try_into().expect("config.sample_rate is too large for u16"),
+            bits_per_sample: config.bytes_per_channel.try_into().expect("config.bytes_per_channel is too large for u16"),
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        let wav_writer = hound::WavWriter::create(Path::new(&*audio_file_name), spec)
+        .expect("Failed to create WAV writer");
+
+        // Store the writer in the Arc<Mutex<Option<>>>
+        *writer.lock().unwrap() = Some(wav_writer);
+
+        println!("Serial port opened successfully and WAV writer initialized.");
+    } else {
+        eprintln!("Failed to open serial port: {}", port_clone.err().unwrap());
+        process::exit(1);
+    }
+
+    let sync_vec: Vec<u8> = vec![0xFF, 0x01, 0xFF, 0x02, 0xFF, 0x03, 0xFF, 0x04];
+    let parser = Arc::new(Mutex::new(parser::parser::Parser::new(config)));
 
     // Set a callback to handle parsed frames
     {
-
         let ram_buffer_for_callback = Arc::clone(&ram_buffer); // Clone for the closure
         let mut parser_lock = parser.lock().unwrap();
         parser_lock.set_callback( move | frame_type, data| {
@@ -138,19 +170,28 @@ fn main() -> io::Result<()> {
     // Start processing thread
     parser::parser::Parser::start(Arc::clone(&parser));
 
+
+    // Clone the writer for Ctrl+C handler
+    let writer_clone = Arc::clone(&writer);
     ctrlc::set_handler(move || {
         println!("\nCtrl+C detected! Flushing buffer to {} file...", audio_file_name);
 
+        let mut writer_guard = writer_clone.lock().unwrap();
+
         // Lock the buffer to access samples
         let buffer = ram_buffer_clone.lock().unwrap();
+       
+       if let Some(ref mut writer) = *writer_guard {
+            for &sample in buffer.iter() {
+                writer.write_sample(sample).expect("Failed to write sample");
+            }
 
-        for &sample in buffer.iter() {
-            writer.write_sample(sample).expect("Failed to write sample");
+            writer.flush().expect("Failed to flush writer");
+            println!("Audio data written successfully!");
+        } else {
+            eprintln!("Writer was not initialized.");
         }
 
-        writer.flush().expect("Failed to flush writer");
-
-        println!("Audio data written successfully!");
         std::process::exit(0);
     }).expect("Error setting Ctrl+C handler");
 

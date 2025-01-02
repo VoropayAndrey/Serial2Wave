@@ -4,7 +4,7 @@ use std::ptr::null;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::constants::common;
+use crate::config::config;
 
 #[derive(PartialEq, Debug)]
 pub enum FrameType {
@@ -13,20 +13,20 @@ pub enum FrameType {
 }
 
 pub struct Parser {
+    config: config::Config,
     last_frame_number: u64,
     data_queue: VecDeque<u8>,
     callback: Option<Box<dyn Fn(FrameType, &[u8]) + Send + Sync>>,
-    sync_bytes: Vec<u8>
 }
 
 impl Parser {
     // Constructor-like function to create a new ParserStruct
-    pub fn new(sync_bytes: Vec<u8>) -> Self {
+    pub fn new(config: config::Config) -> Self {
         Self {
+            config,
             last_frame_number: 0,
             data_queue: VecDeque::new(),
-            callback: None,
-            sync_bytes,
+            callback: None
         }
     }
 
@@ -45,12 +45,12 @@ impl Parser {
 
     // Process data in the queue
     pub fn process(&mut self) {
-        if self.data_queue.len() >= common::PACKET_LENGTH {
+        if self.data_queue.len() >= self.config.audio_frame_bytes_length {
             let packet_to_review: Vec<u8> = self.data_queue.iter().take(self.data_queue.len()).copied().collect();
-            let found_positions: Vec<usize> = packet_to_review.windows(self.sync_bytes.len())
+            let found_positions: Vec<usize> = packet_to_review.windows(self.config.sync_bytes.len())
                 .enumerate() // Get index along with each window
                 .filter_map(|(i, window)| {
-                    if window == self.sync_bytes {
+                    if window == self.config.sync_bytes {
                         Some(i) // Return index if window matches needle
                     } else {
                         None
@@ -63,10 +63,10 @@ impl Parser {
 
             for position in found_positions.iter() {
                 let position = *position; // Explicitly dereference
-                if position < 4004 {
+                if position < (self.config.audio_frame_bytes_length + self.config.audio_frame_number_bytes_length) {
                     continue;
                 }
-                let log_end_index: usize = position - 4004;
+                let log_end_index: usize = position - (self.config.audio_frame_bytes_length + self.config.audio_frame_number_bytes_length);
                 let packet_logs_size = log_end_index - last_audio_frame_position;
                 if packet_logs_size > 0 {
                     let packet_logs = &packet_to_review[last_audio_frame_position..log_end_index];
@@ -78,12 +78,12 @@ impl Parser {
                     if let Some(callback) = &self.callback {
                         callback(FrameType::AudioData, audio_packet);
                     }
-                last_audio_frame_position = position + 8;
+                last_audio_frame_position = position + self.config.sync_bytes.len();
             }
 
             // Remove the all found bytes from the queue
             if !found_positions.is_empty() {
-                self.data_queue.drain(..*found_positions.last().unwrap() + 8);
+                self.data_queue.drain(..*found_positions.last().unwrap() + self.config.sync_bytes.len());
             }
 
 
@@ -146,6 +146,7 @@ impl Parser {
 mod tests {
     use super::*; // Access parent module (`parser`) and its items
     use crate::utils::test_utils;
+    use crate::config::config;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -168,9 +169,21 @@ mod tests {
         let callback_results = Arc::new(Mutex::new(Vec::<(FrameType, Vec<u8>)>::new()));
         let callback_results_clone = Arc::clone(&callback_results);
 
-        let sync_vec: Vec<u8> = vec![0xFF, 0x01, 0xFF, 0x02, 0xFF, 0x03, 0xFF, 0x04];
+        let default_config = config::Config {
+            serial_port: String::from("/dev/tty.usbmodem01234567891"),
+            serial_port_baud_rate: 2_000_000,
+            sample_rate: 48000,
+            audio_frame_bytes_length: 4000,
+            audio_frame_number_bytes_length: 4,
+            number_of_channels: 1,
+            bytes_per_channel: 2,
+            sync_bytes: vec![0xFF, 0x01, 0xFF, 0x02, 0xFF, 0x03, 0xFF, 0x04],
+            output_files_prefix: String::from("prefix"),
+            output_wav_file_path: String::from("./"),
+            output_log_file_path: String::from("./"),
+        };
 
-        let mut parser = Parser::new(sync_vec.clone());
+        let mut parser = Parser::new(default_config.clone());
         parser.set_callback(move |frame_type, data| {
             let mut results: std::sync::MutexGuard<'_, Vec<(FrameType, Vec<u8>)>> = callback_results_clone.lock().unwrap();
             results.push((frame_type, data.to_vec()));
@@ -197,7 +210,7 @@ mod tests {
             assert_eq!(results[0].0, FrameType::LogData, "0 frame should be LogData");
             assert_eq!(results[1].0, FrameType::AudioData, "1 frame should be AudioData");
             //let result_array_1: &[u8] = &results[1].1;
-            assert_eq!(results[1].1[4004..4012], sync_vec, "1 frame should have sync_vec");
+            assert_eq!(results[1].1[4004..4012], default_config.sync_bytes, "1 frame should have sync_vec");
 
             let frame_number_1: u32 = (results[1].1[4000] as u32)
                     | ((results[1].1[4001] as u32) << 8)
@@ -236,14 +249,14 @@ mod tests {
 
             assert_eq!(results[2].0, FrameType::AudioData, "2 frame should be AudioData");
             assert_eq!(results[3].0, FrameType::AudioData, "3 frame should be AudioData");
-            assert_eq!(results[3].1[4004..4012], sync_vec, "3 frame should have sync_vec");
+            assert_eq!(results[3].1[4004..4012], default_config.sync_bytes, "3 frame should have sync_vec");
             let frame_number_3: u32 = (results[3].1[4000] as u32)
             | ((results[3].1[4001] as u32) << 8)
             | ((results[3].1[4002] as u32) << 16)
             | ((results[3].1[4003] as u32) << 24);
             assert_eq!(2, frame_number_3, "3 frame should have frame number 2");
             assert_eq!(results[4].0, FrameType::AudioData, "4 frame should be AudioData");
-            assert_eq!(results[4].1[4004..4012], sync_vec, "4 frame should have sync_vec");
+            assert_eq!(results[4].1[4004..4012], default_config.sync_bytes, "4 frame should have sync_vec");
             let frame_number_4: u32 = (results[4].1[4000] as u32)
             | ((results[4].1[4001] as u32) << 8)
             | ((results[4].1[4002] as u32) << 16)
@@ -303,7 +316,7 @@ mod tests {
             assert_eq!(results[3].0, FrameType::AudioData, "3 frame should be AudioData");
             assert_eq!(results[4].0, FrameType::AudioData, "4 frame should be AudioData");
             assert_eq!(results[5].0, FrameType::AudioData, "6 frame should be AudioData");
-            assert_eq!(results[5].1[4004..4012], sync_vec, "6 frame should have sync_vec");
+            assert_eq!(results[5].1[4004..4012], default_config.sync_bytes, "6 frame should have sync_vec");
             let frame_number_5: u32 = (results[5].1[4000] as u32)
             | ((results[5].1[4001] as u32) << 8)
             | ((results[5].1[4002] as u32) << 16)
@@ -340,7 +353,7 @@ mod tests {
             assert_eq!(results[4].0, FrameType::AudioData, "4 frame should be AudioData");
             assert_eq!(results[5].0, FrameType::AudioData, "5 frame should be AudioData");
             assert_eq!(results[6].0, FrameType::AudioData, "6 frame should be AudioData");
-            assert_eq!(results[6].1[4004..4012], sync_vec, "6 frame should have sync_vec");
+            assert_eq!(results[6].1[4004..4012], default_config.sync_bytes, "6 frame should have sync_vec");
             let frame_number_6: u32 = (results[6].1[4000] as u32)
             | ((results[6].1[4001] as u32) << 8)
             | ((results[6].1[4002] as u32) << 16)
@@ -348,7 +361,7 @@ mod tests {
             assert_eq!(5, frame_number_6, "6 frame should have frame number 5");
             assert_eq!(results[7].0, FrameType::LogData, "7 frame should be LogData");
             assert_eq!(results[8].0, FrameType::AudioData, "8 frame should be AudioData");
-            assert_eq!(results[8].1[4004..4012], sync_vec, "8 frame should have sync_vec");
+            assert_eq!(results[8].1[4004..4012], default_config.sync_bytes, "8 frame should have sync_vec");
             let frame_number_8: u32 = (results[8].1[4000] as u32)
             | ((results[8].1[4001] as u32) << 8)
             | ((results[8].1[4002] as u32) << 16)
