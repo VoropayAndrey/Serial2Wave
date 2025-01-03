@@ -67,4 +67,4 @@ clippy.toml
 Thumbs.db
 
 # Generated config.json file
-config.json
+*.json

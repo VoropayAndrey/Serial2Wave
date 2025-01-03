@@ -91,7 +91,7 @@ fn main() -> io::Result<()> {
 
 
     let now = Local::now();
-    let audio_file_name = Arc::new(format!("{}/{}_sine_{}.wav", 
+    let audio_file_name = Arc::new(format!("{}{}_sine_{}.wav", 
         config.output_wav_file_path, 
         config.output_files_prefix, 
         now.format("%Y-%m-%d_%H:%M:%S%.3f")
@@ -102,8 +102,8 @@ fn main() -> io::Result<()> {
     // Shared mutable writer initialized outside the block
     let writer = Arc::new(Mutex::new(None));
 
-    let port = serialport::new(config.serial_port.clone(), 
-            config.serial_port_baud_rate.try_into().expect("config.number_of_channels is too large for u32"))
+    let port = serialport::new(config.clone().serial_port.clone(), 
+            config.clone().serial_port_baud_rate.try_into().expect("config.number_of_channels is too large for u32"))
         .timeout(Duration::from_secs(1))
         .open();
 
@@ -113,7 +113,7 @@ fn main() -> io::Result<()> {
         let spec = hound::WavSpec {
             channels: config.number_of_channels.try_into().expect("config.number_of_channels is too large for u16"),
             sample_rate: config.sample_rate.try_into().expect("config.sample_rate is too large for u16"),
-            bits_per_sample: config.bytes_per_channel.try_into().expect("config.bytes_per_channel is too large for u16"),
+            bits_per_sample: (config.bytes_per_channel as u16) * 8u16,
             sample_format: hound::SampleFormat::Int,
         };
 
@@ -130,7 +130,7 @@ fn main() -> io::Result<()> {
     }
 
     let sync_vec: Vec<u8> = vec![0xFF, 0x01, 0xFF, 0x02, 0xFF, 0x03, 0xFF, 0x04];
-    let parser = Arc::new(Mutex::new(parser::parser::Parser::new(config)));
+    let parser = Arc::new(Mutex::new(parser::parser::Parser::new(config.clone())));
 
     // Set a callback to handle parsed frames
     {
@@ -197,8 +197,8 @@ fn main() -> io::Result<()> {
 
     match port {
         Ok(mut port) => {
-            println!("Listening on {} at {} baud...", constants::common::SERIAL_PORT, 
-                constants::common::BAUDRATE);
+            println!("Listening on {} at {} baud...", config.serial_port.clone(), 
+                config.serial_port_baud_rate);
             
             // Clear the serial buffer before starting
             clear_serial_buffer(&mut port, constants::common::SERIAL_READ_SIZE);
@@ -214,7 +214,7 @@ fn main() -> io::Result<()> {
                         // n == 0 means EOF or no data; depending on serial config
                     }
                     Err(e) => {
-                        eprintln!("Serial read error: {}", e);
+                        //eprintln!("Serial read error: {}", e);
                         // Possibly break or handle error
                     }
                 }
